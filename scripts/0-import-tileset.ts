@@ -151,7 +151,7 @@ async function runStage1(tilesetFile: string) {
   if (confirm.toLowerCase() === 'y') {
     try {
       console.log('\n🔄 Running detection...')
-      execSync('npx ts-node scripts/detect-tileset-assets.ts', { stdio: 'inherit' })
+      execSync('npx tsx scripts/1-detect-assets.ts', { stdio: 'inherit' })
       console.log('\n✅ Stage 1 complete!')
       return true
     } catch (err) {
@@ -215,7 +215,7 @@ async function runStage3() {
   if (confirm.toLowerCase() === 'y') {
     try {
       console.log('\n🔄 Running vision inspection...')
-      execSync('npx ts-node scripts/inspect-assets.ts', { stdio: 'inherit' })
+      execSync('npx tsx scripts/3-vision-inspect.ts', { stdio: 'inherit' })
       console.log('\n✅ Stage 3 complete!')
       return true
     } catch (err) {
@@ -279,7 +279,7 @@ async function runStage5() {
   if (confirm.toLowerCase() === 'y') {
     try {
       console.log('\n🔄 Exporting assets...')
-      execSync('npx ts-node scripts/export-tileset-assets.ts', { stdio: 'inherit' })
+      execSync('npx tsx scripts/5-export-assets.ts', { stdio: 'inherit' })
       console.log('\n✅ Stage 5 complete!')
       return true
     } catch (err) {

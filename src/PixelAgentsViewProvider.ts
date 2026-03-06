@@ -122,7 +122,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 						projectDir, this.knownJsonlFiles, this.projectScanTimer, this.activeAgentId,
 						this.nextAgentId, this.agents,
 						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-						this.webview, this.persistAgents,
+						this.webview, this.persistAgents, this.jsonlPollTimers,
 					);
 
 					// Load furniture assets BEFORE sending layout

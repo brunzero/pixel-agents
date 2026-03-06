@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import type { AgentState } from './types.js';
 import { cancelWaitingTimer, cancelPermissionTimer, clearAgentActivity } from './timerManager.js';
 import { processTranscriptLine } from './transcriptParser.js';
-import { FILE_WATCHER_POLL_INTERVAL_MS, PROJECT_SCAN_INTERVAL_MS } from './constants.js';
+import { FILE_WATCHER_POLL_INTERVAL_MS, PROJECT_SCAN_INTERVAL_MS, RECENT_ACTIVITY_THRESHOLD_MS, TERMINAL_NAME_PREFIX } from './constants.js';
 
 export function startFileWatching(
 	agentId: number,
@@ -103,8 +103,12 @@ export function ensureProjectScan(
 	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 	webview: vscode.Webview | undefined,
 	persistAgents: () => void,
+	jsonlPollTimers?: Map<number, ReturnType<typeof setInterval>>,
 ): void {
-	if (projectScanTimerRef.current) return;
+	if (projectScanTimerRef.current) {
+		console.log(`[Pixel Agents] ensureProjectScan: timer already running, skipping`);
+		return;
+	}
 	// Seed with all existing JSONL files so we only react to truly new ones
 	try {
 		const files = fs.readdirSync(projectDir)
@@ -113,13 +117,14 @@ export function ensureProjectScan(
 		for (const f of files) {
 			knownJsonlFiles.add(f);
 		}
+		console.log(`[Pixel Agents] ensureProjectScan: seeded ${files.length} existing JSONL files`);
 	} catch { /* dir may not exist yet */ }
 
 	projectScanTimerRef.current = setInterval(() => {
 		scanForNewJsonlFiles(
 			projectDir, knownJsonlFiles, activeAgentIdRef, nextAgentIdRef,
 			agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers,
-			webview, persistAgents,
+			webview, persistAgents, jsonlPollTimers,
 		);
 	}, PROJECT_SCAN_INTERVAL_MS);
 }
@@ -136,6 +141,7 @@ function scanForNewJsonlFiles(
 	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 	webview: vscode.Webview | undefined,
 	persistAgents: () => void,
+	jsonlPollTimers?: Map<number, ReturnType<typeof setInterval>>,
 ): void {
 	let files: string[];
 	try {
@@ -144,19 +150,71 @@ function scanForNewJsonlFiles(
 			.map(f => path.join(projectDir, f));
 	} catch { return; }
 
+	const newFiles = files.filter(f => !knownJsonlFiles.has(f));
+	if (newFiles.length > 0) {
+		console.log(`[Pixel Agents] Scanner: found ${newFiles.length} new JSONL file(s): ${newFiles.map(f => path.basename(f)).join(', ')}, activeAgent=${activeAgentIdRef.current}, agents.size=${agents.size}`);
+	}
+
 	for (const file of files) {
 		if (!knownJsonlFiles.has(file)) {
 			knownJsonlFiles.add(file);
 			if (activeAgentIdRef.current !== null) {
-				// Active agent focused → /clear reassignment
-				console.log(`[Pixel Agents] New JSONL detected: ${path.basename(file)}, reassigning to agent ${activeAgentIdRef.current}`);
-				reassignAgentToFile(
-					activeAgentIdRef.current, file,
-					agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers,
-					webview, persistAgents,
-				);
+				const activeAgent = agents.get(activeAgentIdRef.current);
+				// Check if the active agent's JSONL is still being written to recently.
+				// If yes, it *might* be a parallel agent — but only if a different terminal
+				// created the new file. If the same terminal is active, it's /resume or /clear.
+				let oldFileStillActive = false;
+				if (activeAgent) {
+					try {
+						const stat = fs.statSync(activeAgent.jsonlFile);
+						oldFileStillActive = (Date.now() - stat.mtimeMs) < RECENT_ACTIVITY_THRESHOLD_MS;
+					} catch { /* file may be gone */ }
+				}
+
+				const currentTerminal = vscode.window.activeTerminal;
+				// Same terminal as active agent → /resume or /clear (reassign, not duplicate)
+				// Different terminal + old file active → genuine parallel agent
+				if (oldFileStillActive && currentTerminal && currentTerminal !== activeAgent!.terminalRef) {
+					// Different terminal — check if it's already tracked by another agent
+					let ownerAgentId: number | null = null;
+					for (const [id, a] of agents) {
+						if (a.terminalRef === currentTerminal) {
+							ownerAgentId = id;
+							break;
+						}
+					}
+					if (ownerAgentId !== null) {
+						// Terminal already tracked — reassign that agent (/resume in a different tracked terminal)
+						console.log(`[Pixel Agents] New JSONL detected: ${path.basename(file)}, reassigning agent ${ownerAgentId} (/resume in tracked terminal)`);
+						reassignAgentToFile(
+							ownerAgentId, file,
+							agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers,
+							webview, persistAgents, jsonlPollTimers,
+						);
+					} else {
+						// Untracked terminal — genuine parallel agent
+						console.log(`[Pixel Agents] New JSONL detected: ${path.basename(file)}, creating parallel agent (different terminal)`);
+						adoptTerminalForFile(
+							currentTerminal, file, projectDir,
+							nextAgentIdRef, agents, activeAgentIdRef,
+							fileWatchers, pollingTimers, waitingTimers, permissionTimers,
+							webview, persistAgents,
+						);
+					}
+				} else {
+					// Same terminal or old file inactive → reassignment
+					console.log(`[Pixel Agents] New JSONL detected: ${path.basename(file)}, reassigning to agent ${activeAgentIdRef.current}`);
+					reassignAgentToFile(
+						activeAgentIdRef.current, file,
+						agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers,
+						webview, persistAgents, jsonlPollTimers,
+					);
+				}
 			} else {
-				// No active agent → try to adopt the focused terminal
+				// No active agent — a new JSONL file appearing is strong evidence Claude
+				// is running. Adopt the active terminal (regardless of name — "zsh" etc.
+				// can be running Claude). Startup adoption was removed separately since
+				// there's no new-file signal at startup.
 				const activeTerminal = vscode.window.activeTerminal;
 				if (activeTerminal) {
 					let owned = false;
@@ -167,6 +225,7 @@ function scanForNewJsonlFiles(
 						}
 					}
 					if (!owned) {
+						console.log(`[Pixel Agents] Scanner: adopting terminal "${activeTerminal.name}" for ${path.basename(file)}`);
 						adoptTerminalForFile(
 							activeTerminal, file, projectDir,
 							nextAgentIdRef, agents, activeAgentIdRef,
@@ -178,6 +237,46 @@ function scanForNewJsonlFiles(
 			}
 		}
 	}
+
+	// If no agents exist, check for recently-active existing files.
+	// This handles Claude reusing an existing JSONL (session resume) where
+	// no new file appears on disk.
+	if (agents.size === 0) {
+		let bestFile: string | null = null;
+		let bestMtime = 0;
+		for (const f of files) {
+			try {
+				const stat = fs.statSync(f);
+				if (stat.mtimeMs > bestMtime) {
+					bestMtime = stat.mtimeMs;
+					bestFile = f;
+				}
+			} catch { /* ignore */ }
+		}
+		// Only adopt if modified very recently (within 5s) — proof Claude is active NOW
+		if (bestFile && (Date.now() - bestMtime) < 5000) {
+			const activeTerminal = vscode.window.activeTerminal;
+			if (activeTerminal) {
+				console.log(`[Pixel Agents] Scanner: active JSONL ${path.basename(bestFile)} (${Math.round((Date.now() - bestMtime) / 1000)}s ago), adopting terminal "${activeTerminal.name}"`);
+				adoptTerminalForFile(
+					activeTerminal, bestFile, projectDir,
+					nextAgentIdRef, agents, activeAgentIdRef,
+					fileWatchers, pollingTimers, waitingTimers, permissionTimers,
+					webview, persistAgents,
+				);
+			}
+		}
+	}
+}
+
+/** Check if a terminal looks like it's running Claude Code (not a regular shell). */
+function isClaudeLikeTerminal(terminal: vscode.Terminal): boolean {
+	const name = terminal.name;
+	// Terminals created by pixel-agents: "Claude Code #1", "Claude Code #2", etc.
+	if (name.startsWith(TERMINAL_NAME_PREFIX)) return true;
+	// External Claude Code terminals use their version as the name (e.g. "2.1.70")
+	if (/^\d+\.\d+\.\d+/.test(name)) return true;
+	return false;
 }
 
 function adoptTerminalForFile(
@@ -233,9 +332,17 @@ export function reassignAgentToFile(
 	permissionTimers: Map<number, ReturnType<typeof setTimeout>>,
 	webview: vscode.Webview | undefined,
 	persistAgents: () => void,
+	jsonlPollTimers?: Map<number, ReturnType<typeof setInterval>>,
 ): void {
 	const agent = agents.get(agentId);
 	if (!agent) return;
+
+	// Cancel JSONL poll timer (from launchNewTerminal) to prevent duplicate watchers
+	if (jsonlPollTimers) {
+		const jpTimer = jsonlPollTimers.get(agentId);
+		if (jpTimer) { clearInterval(jpTimer); }
+		jsonlPollTimers.delete(agentId);
+	}
 
 	// Stop old file watching
 	fileWatchers.get(agentId)?.close();

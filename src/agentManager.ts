@@ -180,9 +180,33 @@ export function restoreAgents(
 	let maxIdx = 0;
 	let restoredProjectDir: string | null = null;
 
+	const matchedTerminals = new Set<vscode.Terminal>();
+	const unmatchedJsonlFiles: string[] = [];
+
 	for (const p of persisted) {
-		const terminal = liveTerminals.find(t => t.name === p.terminalName);
-		if (!terminal) continue;
+		// Try exact name match first, then prefix fallback, then version-named terminals
+		let terminal = liveTerminals.find(t => t.name === p.terminalName && !matchedTerminals.has(t));
+		if (!terminal) {
+			// Fallback: match by terminal name prefix (handles renamed terminals after reload)
+			terminal = liveTerminals.find(t =>
+				!matchedTerminals.has(t) &&
+				t.name.startsWith(TERMINAL_NAME_PREFIX)
+			);
+		}
+		if (!terminal) {
+			// Fallback: match version-named terminals (e.g. "2.1.70") — external Claude Code
+			terminal = liveTerminals.find(t =>
+				!matchedTerminals.has(t) &&
+				/^\d+\.\d+\.\d+/.test(t.name)
+			);
+		}
+		if (!terminal) {
+			console.log(`[Pixel Agents] Restore: no terminal found for "${p.terminalName}", skipping agent ${p.id}`);
+			// Collect for un-seeding AFTER ensureProjectScan (which re-seeds all files)
+			unmatchedJsonlFiles.push(p.jsonlFile);
+			continue;
+		}
+		matchedTerminals.add(terminal);
 
 		const agent: AgentState = {
 			id: p.id,
@@ -257,8 +281,15 @@ export function restoreAgents(
 		ensureProjectScan(
 			restoredProjectDir, knownJsonlFiles, projectScanTimerRef, activeAgentIdRef,
 			nextAgentIdRef, agents, fileWatchers, pollingTimers, waitingTimers, permissionTimers,
-			webview, doPersist,
+			webview, doPersist, jsonlPollTimers,
 		);
+	}
+
+	// Un-seed unmatched JSONL files AFTER ensureProjectScan (which re-seeds all files on disk).
+	// This lets the scanner re-detect them when new activity occurs.
+	for (const f of unmatchedJsonlFiles) {
+		knownJsonlFiles.delete(f);
+		console.log(`[Pixel Agents] Un-seeded ${path.basename(f)} for scanner re-detection`);
 	}
 }
 
