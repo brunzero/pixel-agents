@@ -231,10 +231,17 @@ export function useExtensionMessages(
           }
           return { ...prev, [id]: status }
         })
-        os.setAgentActive(id, status === 'active')
-        if (status === 'waiting') {
-          os.showWaitingBubble(id)
-          playDoneSound()
+        if (status === 'thinking') {
+          os.showThinkingBubble(id)
+        } else if (status === 'replying') {
+          os.setAgentActive(id, true)
+          os.showReplyingBubble(id)
+        } else {
+          os.setAgentActive(id, status === 'active')
+          if (status === 'waiting') {
+            os.showWaitingBubble(id)
+            playDoneSound()
+          }
         }
       } else if (msg.type === 'agentToolPermission') {
         const id = msg.id as number

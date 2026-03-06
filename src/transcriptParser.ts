@@ -91,6 +91,8 @@ export function processTranscriptLine(
 				}
 			} else if (blocks.some(b => b.type === 'text') && !agent.hadToolsInTurn) {
 				// Text-only response in a turn that hasn't used any tools.
+				// Show replying bubble — agent sits at desk and types.
+				webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'replying' });
 				// turn_duration handles tool-using turns reliably but is never
 				// emitted for text-only turns, so we use a silence-based timer:
 				// if no new JSONL data arrives within TEXT_IDLE_DELAY_MS, mark as waiting.
@@ -141,12 +143,16 @@ export function processTranscriptLine(
 					cancelWaitingTimer(agentId, waitingTimers);
 					clearAgentActivity(agent, agentId, permissionTimers, webview);
 					agent.hadToolsInTurn = false;
+					// Show thinking bubble while Claude processes
+					webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'thinking' });
 				}
 			} else if (typeof content === 'string' && content.trim()) {
 				// New user text prompt — new turn starting
 				cancelWaitingTimer(agentId, waitingTimers);
 				clearAgentActivity(agent, agentId, permissionTimers, webview);
 				agent.hadToolsInTurn = false;
+				// Show thinking bubble while Claude processes
+				webview?.postMessage({ type: 'agentStatus', id: agentId, status: 'thinking' });
 			}
 		} else if (record.type === 'system' && record.subtype === 'turn_duration') {
 			cancelWaitingTimer(agentId, waitingTimers);

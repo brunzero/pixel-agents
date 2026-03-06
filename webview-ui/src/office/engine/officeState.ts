@@ -498,6 +498,11 @@ export class OfficeState {
     const ch = this.characters.get(id)
     if (ch) {
       ch.isActive = active
+      // Clear thinking/replying bubbles on state transitions
+      if (ch.bubbleType === 'thinking' || ch.bubbleType === 'replying') {
+        ch.bubbleType = null
+        ch.bubbleTimer = 0
+      }
       if (!active) {
         // Sentinel -1: signals turn just ended, skip next seat rest timer.
         // Prevents the WALK handler from setting a 2-4 min rest on arrival.
@@ -597,6 +602,22 @@ export class OfficeState {
     if (ch) {
       ch.bubbleType = 'waiting'
       ch.bubbleTimer = WAITING_BUBBLE_DURATION_SEC
+    }
+  }
+
+  showThinkingBubble(id: number): void {
+    const ch = this.characters.get(id)
+    if (ch) {
+      ch.bubbleType = 'thinking'
+      ch.bubbleTimer = 0
+    }
+  }
+
+  showReplyingBubble(id: number): void {
+    const ch = this.characters.get(id)
+    if (ch) {
+      ch.bubbleType = 'replying'
+      ch.bubbleTimer = 0
     }
   }
 
